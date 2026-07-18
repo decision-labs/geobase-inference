@@ -26,7 +26,7 @@ class EndpointHandler(ChangeStarHandler):
 Install a released integration directly from Git:
 
 ```text
-geobase-inference[changestar] @ git+https://github.com/decision-labs/geobase-inference.git@v0.1.0
+geobase-inference[changestar] @ git+https://github.com/decision-labs/geobase-inference.git@v0.1.1
 ```
 
 Available integrations:
