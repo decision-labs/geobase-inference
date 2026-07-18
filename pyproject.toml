@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "geobase-inference"
-version = "0.1.0"
+version = "0.1.1"
 description = "Reusable Hugging Face Inference Endpoint handlers for geospatial models"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -38,7 +38,8 @@ clay = [
   "rasterio>=1.3",
   "shapely>=2.0",
   "supabase>=2",
-  "torch>=2.0,<2.3",
+  "torch>=2.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+  "torch>=2.0,<2.3; sys_platform == 'darwin' and platform_machine == 'x86_64'",
 ]
 all = [
   "hf-xet>=1.4.0",
@@ -49,7 +50,8 @@ all = [
   "rasterio>=1.3",
   "shapely>=2.0",
   "supabase>=2",
-  "torch>=2.0,<2.3",
+  "torch>=2.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+  "torch>=2.0,<2.3; sys_platform == 'darwin' and platform_machine == 'x86_64'",
 ]
 dev = [
   "pytest>=8",
