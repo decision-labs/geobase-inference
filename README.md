@@ -35,6 +35,20 @@ Available integrations:
 - `ClayHandler`: Clay global or patch embeddings with JSON, GeoArrow,
   Supabase, and optional Hub bucket persistence.
 
+## ChangeStar output CRS
+
+Building GeoJSON is returned in `EPSG:4326` by default. Set `output_crs`
+at the top level or inside `parameters` to request another CRS:
+
+```json
+{
+  "inputs": "https://example.com/image.tif",
+  "parameters": {"output_crs": "EPSG:3857"}
+}
+```
+
+The mask GeoTIFF remains in the source raster CRS.
+
 ## Optional Hub bucket output
 
 Handlers return inline JSON unless bucket persistence is configured:

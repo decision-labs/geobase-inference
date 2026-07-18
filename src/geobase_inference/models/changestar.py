@@ -14,6 +14,7 @@ from typing import Any
 import numpy as np
 import onnxruntime as ort
 import rasterio
+from rasterio.errors import CRSError
 from rasterio.windows import Window
 
 from geobase_inference.core import (
@@ -40,6 +41,7 @@ IMAGENET_STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 TILE_SIZE = 1024
 DEFAULT_OVERLAP = 64
 DEFAULT_THRESHOLD = 0.5
+DEFAULT_OUTPUT_CRS = "EPSG:4326"
 
 
 @dataclass(frozen=True)
@@ -47,6 +49,7 @@ class ChangeStarRequest:
     url: str
     overlap: int
     threshold: float
+    output_crs: str
     use_bucket: bool
     output_prefix: str | None
 
@@ -108,6 +111,11 @@ class ChangeStarHandler:
         threshold = float(request_value(data, "threshold", DEFAULT_THRESHOLD))
         if not 0 <= threshold <= 1:
             raise RequestValidationError("threshold must be between 0 and 1")
+        output_crs_raw = request_value(data, "output_crs", DEFAULT_OUTPUT_CRS)
+        try:
+            output_crs = rasterio.crs.CRS.from_user_input(output_crs_raw).to_string()
+        except (CRSError, ValueError, TypeError) as error:
+            raise RequestValidationError(f"Invalid output_crs: {output_crs_raw!r}") from error
 
         use_bucket = request_value(data, "use_bucket", None)
         if use_bucket is None:
@@ -121,6 +129,7 @@ class ChangeStarHandler:
             url=url,
             overlap=overlap,
             threshold=threshold,
+            output_crs=output_crs,
             use_bucket=use_bucket,
             output_prefix=output_prefix,
         )
@@ -246,7 +255,12 @@ class ChangeStarHandler:
                 tif_path,
                 request,
             )
-            geojson = mask_to_geojson(mask, transform, crs)
+            geojson = mask_to_geojson(
+                mask,
+                transform,
+                crs,
+                output_crs=request.output_crs,
+            )
             building_pixels = int(mask.sum())
             result: dict[str, Any] = {
                 "polygon_count": len(geojson["features"]),
@@ -255,6 +269,7 @@ class ChangeStarHandler:
                 "width": int(mask.shape[1]),
                 "height": int(mask.shape[0]),
                 "crs": crs.to_string() if crs else None,
+                "output_crs": request.output_crs,
             }
 
             if request.use_bucket:

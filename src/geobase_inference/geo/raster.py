@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 import rasterio
 from rasterio.features import shapes as rio_shapes
+from rasterio.warp import transform_geom
 from shapely.geometry import mapping
 from shapely.geometry import shape as shapely_shape
 
@@ -58,7 +59,11 @@ def mask_to_geojson(
     crs: Any,
     *,
     class_name: str = "building",
+    output_crs: Any = "EPSG:4326",
 ) -> dict[str, Any]:
+    if crs is None:
+        raise ValueError("Cannot create reprojected GeoJSON from a raster without a CRS")
+    output_crs_name = rasterio.crs.CRS.from_user_input(output_crs).to_string()
     features = []
     for geometry, value in rio_shapes(
         mask.astype(np.uint8),
@@ -66,6 +71,7 @@ def mask_to_geojson(
         transform=transform,
     ):
         if value == 1:
+            geometry = transform_geom(crs, output_crs_name, geometry)
             features.append(
                 {
                     "type": "Feature",
@@ -73,10 +79,9 @@ def mask_to_geojson(
                     "properties": {"class": class_name},
                 }
             )
-    crs_name = crs.to_string() if crs else "EPSG:4326"
     return {
         "type": "FeatureCollection",
-        "crs": {"type": "name", "properties": {"name": crs_name}},
+        "crs": {"type": "name", "properties": {"name": output_crs_name}},
         "features": features,
     }
 

@@ -13,7 +13,28 @@ def test_changestar_request_defaults() -> None:
     request = ChangeStarHandler._parse_request({"inputs": "https://example.com/image.tif"})
     assert request.threshold == 0.5
     assert request.overlap == 64
+    assert request.output_crs == "EPSG:4326"
     assert request.use_bucket is False
+
+
+def test_changestar_accepts_custom_output_crs() -> None:
+    request = ChangeStarHandler._parse_request(
+        {
+            "inputs": "https://example.com/image.tif",
+            "parameters": {"output_crs": "EPSG:3857"},
+        }
+    )
+    assert request.output_crs == "EPSG:3857"
+
+
+def test_changestar_rejects_invalid_output_crs() -> None:
+    with pytest.raises(RequestValidationError, match="Invalid output_crs"):
+        ChangeStarHandler._parse_request(
+            {
+                "inputs": "https://example.com/image.tif",
+                "output_crs": "not-a-crs",
+            }
+        )
 
 
 def test_changestar_rejects_non_1024_tiles() -> None:

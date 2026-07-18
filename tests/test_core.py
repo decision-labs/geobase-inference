@@ -8,7 +8,7 @@ from geobase_inference.core import (
     request_value,
     require_http_url,
 )
-from geobase_inference.geo import feather_weight, tile_to_rgb_uint8
+from geobase_inference.geo import feather_weight, mask_to_geojson, tile_to_rgb_uint8
 
 
 def test_request_value_supports_nested_parameters() -> None:
@@ -35,6 +35,25 @@ def test_raster_helpers() -> None:
     assert rgb.shape == (4, 4, 3)
     assert rgb.dtype == np.uint8
     assert feather_weight(8, 2).shape == (8, 8)
+
+
+def test_mask_to_geojson_reprojects_to_wgs84_by_default() -> None:
+    import numpy as np
+    from rasterio.transform import from_origin
+    from shapely.geometry import shape
+
+    mask = np.ones((1, 1), dtype=np.uint8)
+    geojson = mask_to_geojson(
+        mask,
+        from_origin(0, 111325.1429, 111319.4908, 111325.1429),
+        "EPSG:3857",
+    )
+
+    assert geojson["crs"]["properties"]["name"] == "EPSG:4326"
+    assert shape(geojson["features"][0]["geometry"]).bounds == pytest.approx(
+        (0, 0, 1, 1),
+        abs=1e-6,
+    )
 
 
 def test_no_environment_leak() -> None:
