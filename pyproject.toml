@@ -1,0 +1,75 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "geobase-inference"
+version = "0.1.0"
+description = "Reusable Hugging Face Inference Endpoint handlers for geospatial models"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Decision Labs" }]
+dependencies = [
+  "httpx>=0.27.0",
+  "numpy>=1.24",
+  "requests>=2.31",
+]
+
+[project.optional-dependencies]
+geo = [
+  "rasterio>=1.3",
+  "shapely>=2.0",
+]
+bucket = [
+  "hf-xet>=1.4.0",
+]
+changestar = [
+  "hf-xet>=1.4.0",
+  "onnxruntime>=1.18,<1.24",
+  "rasterio>=1.3",
+  "shapely>=2.0",
+]
+clay = [
+  "hf-xet>=1.4.0",
+  "numpy<2",
+  "pyarrow>=15",
+  "PyYAML>=6",
+  "rasterio>=1.3",
+  "shapely>=2.0",
+  "supabase>=2",
+  "torch>=2.0,<2.3",
+]
+all = [
+  "hf-xet>=1.4.0",
+  "onnxruntime>=1.18,<1.24",
+  "numpy<2",
+  "pyarrow>=15",
+  "PyYAML>=6",
+  "rasterio>=1.3",
+  "shapely>=2.0",
+  "supabase>=2",
+  "torch>=2.0,<2.3",
+]
+dev = [
+  "pytest>=8",
+  "pytest-cov>=5",
+  "ruff>=0.5",
+]
+
+[project.urls]
+Repository = "https://github.com/decision-labs/geobase-inference"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/geobase_inference"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
