@@ -21,8 +21,8 @@ from geobase_inference.core import (
     BaseModelRequest,
     RequestValidationError,
     configure_logging,
+    normalize_handler_input,
     request_value,
-    require_mapping,
 )
 from geobase_inference.geo import (
     create_temporary_geotiff,
@@ -126,7 +126,7 @@ class ChangeStarHandler:
 
     @staticmethod
     def _parse_request(raw: Any) -> ChangeStarRequest:
-        data = require_mapping(raw)
+        data = normalize_handler_input(raw)
         imagery = parse_imagery_input(data.get("imagery"))
         tile_size = int(request_value(data, "tile_size", TILE_SIZE))
         if tile_size != TILE_SIZE:

@@ -36,6 +36,19 @@ services do not require `ESRI_TOKEN`.
 
 ## Imagery inputs
 
+Hugging Face HTTP requests place the handler request inside `inputs`:
+
+```json
+{
+  "inputs": {
+    "imagery": "https://example.com/image.tif"
+  }
+}
+```
+
+The handlers also accept the unwrapped object when called directly in Python.
+The examples below show that inner handler request.
+
 All handlers accept the original GeoTIFF/COG URL:
 
 ```json

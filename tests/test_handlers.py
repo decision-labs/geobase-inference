@@ -21,6 +21,37 @@ def test_changestar_request_defaults() -> None:
     assert isinstance(request.imagery, GeoTiffInput)
 
 
+def test_handlers_unwrap_hugging_face_inputs() -> None:
+    changestar = ChangeStarHandler._parse_request(
+        {
+            "inputs": {
+                "imagery": "https://example.com/image.tif",
+                "output_crs": "EPSG:3857",
+            }
+        }
+    )
+    clay = ClayHandler._parse_request(
+        {
+            "inputs": {
+                "imagery": "https://example.com/image.tif",
+                "chip_size": 256,
+            }
+        }
+    )
+
+    assert isinstance(changestar.imagery, GeoTiffInput)
+    assert changestar.output_crs == "EPSG:3857"
+    assert isinstance(clay.imagery, GeoTiffInput)
+    assert clay.chip_size == 256
+
+
+def test_handler_accepts_url_as_hugging_face_inputs() -> None:
+    request = ChangeStarHandler._parse_request(
+        {"inputs": "https://example.com/image.tif"}
+    )
+    assert isinstance(request.imagery, GeoTiffInput)
+
+
 def test_changestar_accepts_custom_output_crs() -> None:
     request = ChangeStarHandler._parse_request(
         {

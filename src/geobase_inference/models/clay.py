@@ -22,8 +22,8 @@ import yaml
 from geobase_inference.core import (
     RequestValidationError,
     configure_logging,
+    normalize_handler_input,
     request_value,
-    require_mapping,
 )
 from geobase_inference.geo import (
     GeoTiffInput,
@@ -145,7 +145,7 @@ class ClayHandler:
 
     @staticmethod
     def _parse_request(raw: Any) -> ClayRequest:
-        data = require_mapping(raw)
+        data = normalize_handler_input(raw)
         imagery = parse_imagery_input(data.get("imagery"))
         chip_size_raw = request_value(data, "chip_size", None)
         if chip_size_raw is None:

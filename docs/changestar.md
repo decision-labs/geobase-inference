@@ -22,12 +22,14 @@ class EndpointHandler(ChangeStarHandler):
 ## Output CRS
 
 Building GeoJSON is returned in `EPSG:4326` by default. Set `output_crs`
-at the top level or inside `parameters` to request another CRS:
+alongside `imagery` inside `inputs` to request another CRS:
 
 ```json
 {
-  "imagery": "https://example.com/image.tif",
-  "parameters": {"output_crs": "EPSG:3857"}
+  "inputs": {
+    "imagery": "https://example.com/image.tif",
+    "output_crs": "EPSG:3857"
+  }
 }
 ```
 

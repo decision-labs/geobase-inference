@@ -45,6 +45,24 @@ def require_mapping(data: Any) -> dict[str, Any]:
     return dict(data)
 
 
+def normalize_handler_input(raw: Any) -> dict[str, Any]:
+    """Unwrap the Hugging Face ``inputs`` envelope while supporting direct calls."""
+    outer = require_mapping(raw)
+    if "inputs" not in outer:
+        return outer
+
+    inputs = outer["inputs"]
+    if isinstance(inputs, str):
+        data: dict[str, Any] = {"imagery": inputs}
+    elif isinstance(inputs, Mapping):
+        data = dict(inputs)
+    else:
+        raise RequestValidationError(
+            "inputs must be a JSON object or an imagery URL string"
+        )
+    return data
+
+
 def request_value(
     data: Mapping[str, Any],
     name: str,

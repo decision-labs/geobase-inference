@@ -23,12 +23,14 @@ class EndpointHandler(ClayHandler):
 
 ```json
 {
-  "imagery": "https://example.com/image.tif",
-  "chip_size": 512,
-  "sensor": "naip",
-  "date": "2022-07-04",
-  "embedding_type": "global",
-  "format": "json"
+  "inputs": {
+    "imagery": "https://example.com/image.tif",
+    "chip_size": 512,
+    "sensor": "naip",
+    "date": "2022-07-04",
+    "embedding_type": "global",
+    "format": "json"
+  }
 }
 ```
 
