@@ -22,6 +22,18 @@ flowchart TD
 Each guide includes installation, the model repository's `handler.py` wrapper,
 request parameters, and response formats.
 
+## Environment variables
+
+- `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN`: Hub token used for bucket persistence.
+- `HF_BUCKET=namespace/bucket-name`: target Hub bucket.
+- `HF_OUTPUT_PREFIX`: optional prefix for persisted output keys.
+- `HF_ENDPOINT`: optional custom Hub endpoint; defaults to `https://huggingface.co`.
+- `MAPBOX_ACCESS_TOKEN`: required when using Mapbox imagery.
+- `ESRI_TOKEN`: required only for secured ESRI ImageServer services.
+
+Bucket persistence requires both a Hub token and `HF_BUCKET`. Public ESRI
+services do not require `ESRI_TOKEN`.
+
 ## Imagery inputs
 
 All handlers accept the original GeoTIFF/COG URL:
@@ -91,11 +103,8 @@ provider's standard 256-pixel tile. `imageFormat` may be `png`, `png32`,
 
 ## Optional Hub bucket output
 
-Handlers return inline JSON unless bucket persistence is configured:
-
-- `HF_TOKEN` or `HUGGING_FACE_HUB_TOKEN`
-- `HF_BUCKET=namespace/bucket-name`
-- optional `HF_OUTPUT_PREFIX`
+Handlers return inline JSON unless bucket persistence is configured with the
+Hub environment variables above.
 
 Requests may set `use_bucket: false` to force an inline response or
 `use_bucket: true` to require configured bucket persistence.
