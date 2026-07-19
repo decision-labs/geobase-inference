@@ -8,28 +8,37 @@ import logging
 import os
 import sys
 import tempfile
-import time
 import uuid
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import torch
 import yaml
-from httpx import Client, Timeout
-from supabase import create_client
-from supabase.lib.client_options import SyncClientOptions
 
 from geobase_inference.core import (
     RequestValidationError,
     configure_logging,
     request_value,
-    require_http_url,
     require_mapping,
+)
+from geobase_inference.geo import (
+    GeoTiffInput,
+    create_temporary_geotiff,
+    parse_imagery_input,
+)
+from geobase_inference.models.clay_types import (
+    SUPPORTED_CLAY_SENSORS,
+    ClayEmbedding,
+    ClayEmbeddingType,
+    ClayOutputFormat,
+    ClayPersistedResponse,
+    ClayRequest,
+    ClayResponse,
+    ClaySensor,
 )
 from geobase_inference.storage import (
     hub_persistence_config,
@@ -56,7 +65,7 @@ def _register_arrow_content_type(logger: logging.Logger) -> None:
         class ArrowSerializer:
             @staticmethod
             def deserialize(body: bytes) -> dict[str, bytes]:
-                return {"inputs": body}
+                return {"imagery": body}
 
             @staticmethod
             def serialize(data: Any, accept: str | None = None) -> bytes:
@@ -70,26 +79,8 @@ def _register_arrow_content_type(logger: logging.Logger) -> None:
         logger.info("Inference toolkit unavailable; Arrow type not registered")
 
 
-@dataclass(frozen=True)
-class ClayRequest:
-    inputs: str
-    sensor: str
-    date: str | None
-    chip_size: int
-    embedding_type: str
-    format: str
-    geobase_url: str | None
-    geobase_key: str | None
-    geobase_bucket: str | None
-    geobase_path: str | None
-    use_bucket: bool
-    output_prefix: str | None
-
-
 class ClayHandler:
     """Hugging Face endpoint handler for Clay v1.5 embeddings."""
-
-    chunk_rows = 4000
 
     def __init__(self, path: str = "") -> None:
         configure_logging()
@@ -155,7 +146,7 @@ class ClayHandler:
     @staticmethod
     def _parse_request(raw: Any) -> ClayRequest:
         data = require_mapping(raw)
-        inputs = require_http_url(data.get("inputs"))
+        imagery = parse_imagery_input(data.get("imagery"))
         chip_size_raw = request_value(data, "chip_size", None)
         if chip_size_raw is None:
             raise RequestValidationError("chip_size is required")
@@ -170,6 +161,11 @@ class ClayHandler:
         output_format = str(request_value(data, "format", "json")).lower()
         if output_format not in {"json", "geoarrow"}:
             raise RequestValidationError("format must be 'json' or 'geoarrow'")
+        sensor = str(request_value(data, "sensor", "naip"))
+        if sensor not in SUPPORTED_CLAY_SENSORS:
+            raise RequestValidationError(
+                f"sensor must be one of: {', '.join(SUPPORTED_CLAY_SENSORS)}"
+            )
         use_bucket = request_value(data, "use_bucket", None)
         if use_bucket is None:
             use_bucket = hub_persistence_config(default_prefix="clay-hub/") is not None
@@ -179,16 +175,12 @@ class ClayHandler:
         if output_prefix is not None and not isinstance(output_prefix, str):
             raise RequestValidationError("output_prefix must be a string")
         return ClayRequest(
-            inputs=inputs,
-            sensor=str(request_value(data, "sensor", "naip")),
+            imagery=imagery,
+            sensor=cast(ClaySensor, sensor),
             date=request_value(data, "date", None),
             chip_size=chip_size,
-            embedding_type=embedding_type,
-            format=output_format,
-            geobase_url=request_value(data, "geobase_url", None),
-            geobase_key=request_value(data, "geobase_key", None),
-            geobase_bucket=request_value(data, "geobase_bucket", None),
-            geobase_path=request_value(data, "geobase_path", None),
+            embedding_type=cast(ClayEmbeddingType, embedding_type),
+            clay_output_format=cast(ClayOutputFormat, output_format),
             use_bucket=use_bucket,
             output_prefix=output_prefix,
         )
@@ -316,80 +308,16 @@ class ClayHandler:
             )
         )
 
-    def _upload_to_supabase(
+    def _process_tiff(
         self,
-        file_path: str,
         request: ClayRequest,
-    ) -> tuple[list[str], list[str]]:
-        table = pq.read_table(file_path)
-        base_path = (
-            request.geobase_path
-            or "clay-output/"
-            f"{datetime.now(timezone.utc).strftime('%Y%m%d')}/"
-            f"{uuid.uuid4().hex}.parquet"
-        )
-        if base_path.endswith(".parquet"):
-            base_path = base_path[:-8]
-        http_client = Client(timeout=Timeout(600), http2=False)
-        options = SyncClientOptions(httpx_client=http_client)
-        client = create_client(
-            request.geobase_url,
-            request.geobase_key,
-            options=options,
-        )
-        urls: list[str] = []
-        paths: list[str] = []
-        try:
-            for index in range(0, table.num_rows, self.chunk_rows):
-                chunk = table.slice(
-                    index,
-                    min(self.chunk_rows, table.num_rows - index),
-                )
-                chunk_path = (
-                    f"{base_path}.parquet"
-                    if table.num_rows <= self.chunk_rows
-                    else f"{base_path}.part{index // self.chunk_rows:04d}.parquet"
-                )
-                sink = pa.BufferOutputStream()
-                pq.write_table(chunk, sink)
-                body = sink.getvalue().to_pybytes()
-                bucket = client.storage.from_(request.geobase_bucket)
-                last_error: Exception | None = None
-                for attempt in range(3):
-                    try:
-                        bucket.upload(
-                            chunk_path,
-                            body,
-                            file_options={"content-type": "application/octet-stream"},
-                        )
-                        urls.append(bucket.get_public_url(chunk_path))
-                        paths.append(chunk_path)
-                        last_error = None
-                        break
-                    except Exception as error:
-                        last_error = error
-                        if attempt < 2:
-                            time.sleep(2**attempt)
-                if last_error:
-                    raise last_error
-        finally:
-            http_client.close()
-        return urls, paths
-
-    def _process(self, request: ClayRequest) -> dict[str, Any] | bytes:
-        tiff_path = self.download_imagery(
-            request.inputs,
-            request.sensor,
-            metadata=self.metadata,
-        )
+        tiff_path: str,
+    ) -> ClayResponse:
         _, output_folder = self.create_chips(
             tiff_path,
             chip_size=request.chip_size,
         )
         images_dir = os.path.join(output_folder, "images")
-        supabase_enabled = bool(
-            request.geobase_url and request.geobase_key and request.geobase_bucket
-        )
         bucket_config = (
             hub_persistence_config(default_prefix="clay-hub/") if request.use_bucket else None
         )
@@ -397,13 +325,12 @@ class ClayHandler:
             raise RequestValidationError(
                 "use_bucket=true requires HF_BUCKET and HF_TOKEN (or HUGGING_FACE_HUB_TOKEN)"
             )
-        stream = supabase_enabled or bucket_config is not None
-        results: list[dict[str, Any]] = []
+        results: list[ClayEmbedding] = []
         parquet_path: str | None = None
         writer: pq.ParquetWriter | None = None
         row_count = 0
 
-        if stream:
+        if bucket_config:
             fd, parquet_path = tempfile.mkstemp(suffix=".parquet")
             os.close(fd)
             writer = pq.ParquetWriter(parquet_path, PARQUET_SCHEMA)
@@ -469,38 +396,26 @@ class ClayHandler:
             if writer and parquet_path:
                 writer.close()
                 writer = None
-                response: dict[str, Any] = {"row_count": row_count}
-                if supabase_enabled:
-                    urls, paths = self._upload_to_supabase(
-                        parquet_path,
-                        request,
-                    )
-                    response.update(
-                        {
-                            "urls": urls,
-                            "paths": paths,
-                            "url": urls[0] if urls else None,
-                            "path": paths[0] if paths else None,
-                        }
-                    )
-                if bucket_config:
-                    date = datetime.now(timezone.utc).strftime("%Y%m%d")
-                    key = request.output_prefix or (
-                        f"{bucket_config['prefix']}{date}/{uuid.uuid4().hex}.parquet"
-                    )
-                    committed_key = upload_file_to_hub(
-                        parquet_path,
-                        bucket=bucket_config["bucket"],
-                        token=bucket_config["token"],
-                        key=key,
-                    )
-                    response["storage"] = {
+                date = datetime.now(timezone.utc).strftime("%Y%m%d")
+                key = request.output_prefix or (
+                    f"{bucket_config['prefix']}{date}/{uuid.uuid4().hex}.parquet"
+                )
+                committed_key = upload_file_to_hub(
+                    parquet_path,
+                    bucket=bucket_config["bucket"],
+                    token=bucket_config["token"],
+                    key=key,
+                )
+                response: ClayPersistedResponse = {
+                    "row_count": row_count,
+                    "storage": {
                         "provider": "huggingface_hub",
                         "bucket": bucket_config["bucket"],
                         "keys": [committed_key],
                         "key": committed_key,
                         "format": "parquet",
-                    }
+                    },
+                }
                 return response
         finally:
             if writer:
@@ -508,16 +423,34 @@ class ClayHandler:
             if parquet_path and os.path.exists(parquet_path):
                 os.unlink(parquet_path)
 
-        if request.format == "geoarrow":
+        if request.clay_output_format == "geoarrow":
             return self.results_to_arrow_ipc(results)
         return {"results": results}
 
-    def __call__(self, data: dict[str, Any]) -> dict[str, Any] | bytes:
+    def _process(self, request: ClayRequest) -> ClayResponse:
+        if isinstance(request.imagery, GeoTiffInput):
+            tiff_path = self.download_imagery(
+                request.imagery.url,
+                request.sensor,
+                metadata=self.metadata,
+            )
+            try:
+                return self._process_tiff(request, tiff_path)
+            finally:
+                if tiff_path and os.path.exists(tiff_path):
+                    os.unlink(tiff_path)
+        with create_temporary_geotiff(
+            request.imagery, logger=self.logger
+        ) as tiff_path:
+            return self._process_tiff(request, tiff_path)
+
+    def __call__(self, data: dict[str, Any]) -> ClayResponse:
         request = self._parse_request(data)
         self.logger.info(
-            "Clay request sensor=%s embedding_type=%s format=%s",
+            "Clay request source=%s sensor=%s embedding_type=%s format=%s",
+            request.imagery.type,
             request.sensor,
             request.embedding_type,
-            request.format,
+            request.clay_output_format,
         )
         return self._process(request)

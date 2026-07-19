@@ -9,7 +9,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, TypeAlias, TypedDict
 
 import numpy as np
 import onnxruntime as ort
@@ -18,19 +18,21 @@ from rasterio.errors import CRSError
 from rasterio.windows import Window
 
 from geobase_inference.core import (
+    BaseModelRequest,
     RequestValidationError,
     configure_logging,
-    download_to_temp,
     request_value,
-    require_http_url,
     require_mapping,
 )
 from geobase_inference.geo import (
+    create_temporary_geotiff,
     feather_weight,
     mask_tiff_bytes,
     mask_to_geojson,
+    parse_imagery_input,
     tile_to_rgb_uint8,
 )
+from geobase_inference.output_types import BucketStorage, GeoJSONOutput
 from geobase_inference.storage import (
     hub_persistence_config,
     upload_artifacts_to_hub,
@@ -45,13 +47,42 @@ DEFAULT_OUTPUT_CRS = "EPSG:4326"
 
 
 @dataclass(frozen=True)
-class ChangeStarRequest:
-    url: str
+class ChangeStarRequest(BaseModelRequest):
     overlap: int
     threshold: float
     output_crs: str
     use_bucket: bool
     output_prefix: str | None
+
+
+class ChangeStarSummary(TypedDict):
+    """Metrics shared by inline and persisted ChangeStar responses."""
+
+    polygon_count: int
+    building_pixels: int
+    building_coverage: float
+    width: int
+    height: int
+    crs: str | None
+    output_crs: str
+
+
+class ChangeStarGeoJSONResponse(ChangeStarSummary, GeoJSONOutput):
+    """ChangeStar response containing building polygons."""
+
+    duration_seconds: float
+
+
+class ChangeStarPersistedResponse(ChangeStarSummary):
+    """ChangeStar response containing persisted output artifacts."""
+
+    storage: BucketStorage
+    duration_seconds: float
+
+
+ChangeStarResponse: TypeAlias = (
+    ChangeStarGeoJSONResponse | ChangeStarPersistedResponse
+)
 
 
 class ChangeStarHandler:
@@ -83,8 +114,6 @@ class ChangeStarHandler:
         candidates = (
             "onnx/model_quantized.onnx",
             "onnx/model.onnx",
-            "model_quantized.onnx",
-            "model.onnx",
         )
         for relative_path in candidates:
             candidate = os.path.join(self.path, relative_path)
@@ -98,7 +127,7 @@ class ChangeStarHandler:
     @staticmethod
     def _parse_request(raw: Any) -> ChangeStarRequest:
         data = require_mapping(raw)
-        url = require_http_url(data.get("inputs"))
+        imagery = parse_imagery_input(data.get("imagery"))
         tile_size = int(request_value(data, "tile_size", TILE_SIZE))
         if tile_size != TILE_SIZE:
             raise RequestValidationError(
@@ -126,7 +155,7 @@ class ChangeStarHandler:
         if output_prefix is not None and not isinstance(output_prefix, str):
             raise RequestValidationError("output_prefix must be a string")
         return ChangeStarRequest(
-            url=url,
+            imagery=imagery,
             overlap=overlap,
             threshold=threshold,
             output_crs=output_crs,
@@ -241,74 +270,81 @@ class ChangeStarHandler:
         )
         return mask, transform, crs, profile
 
-    def __call__(self, data: dict[str, Any]) -> dict[str, Any]:
+    def __call__(self, data: dict[str, Any]) -> ChangeStarResponse:
         started = time.perf_counter()
         request = self._parse_request(data)
-        self.logger.info("Processing %s", request.url)
-        tif_path = download_to_temp(
-            request.url,
-            suffix=".tif",
-            logger=self.logger,
-        )
+        self.logger.info("Processing %s imagery", request.imagery.type)
         try:
-            mask, transform, crs, profile = self._run_inference(
-                tif_path,
-                request,
-            )
-            geojson = mask_to_geojson(
-                mask,
-                transform,
-                crs,
-                output_crs=request.output_crs,
-            )
-            building_pixels = int(mask.sum())
-            result: dict[str, Any] = {
-                "polygon_count": len(geojson["features"]),
-                "building_pixels": building_pixels,
-                "building_coverage": building_pixels / max(mask.size, 1),
-                "width": int(mask.shape[1]),
-                "height": int(mask.shape[0]),
-                "crs": crs.to_string() if crs else None,
-                "output_crs": request.output_crs,
-            }
-
-            if request.use_bucket:
-                config = hub_persistence_config(default_prefix="building-segmentation/")
-                if config is None:
-                    raise RequestValidationError(
-                        "use_bucket=true requires HF_BUCKET and HF_TOKEN "
-                        "(or HUGGING_FACE_HUB_TOKEN)"
-                    )
-                date = datetime.now(timezone.utc).strftime("%Y%m%d")
-                prefix = request.output_prefix or (f"{config['prefix']}{date}/{uuid.uuid4().hex}/")
-                keys = upload_artifacts_to_hub(
-                    {
-                        "buildings.geojson": json.dumps(geojson).encode(),
-                        "buildings_mask.tif": mask_tiff_bytes(mask, profile),
-                    },
-                    bucket=config["bucket"],
-                    token=config["token"],
-                    prefix=prefix,
+            with create_temporary_geotiff(
+                request.imagery, logger=self.logger
+            ) as tif_path:
+                mask, transform, crs, profile = self._run_inference(
+                    tif_path,
+                    request,
                 )
-                result["storage"] = {
-                    "provider": "huggingface_hub",
-                    "bucket": config["bucket"],
-                    "keys": keys,
+                geojson = mask_to_geojson(
+                    mask,
+                    transform,
+                    crs,
+                    output_crs=request.output_crs,
+                )
+                building_pixels = int(mask.sum())
+                summary: ChangeStarSummary = {
+                    "polygon_count": len(geojson["features"]),
+                    "building_pixels": building_pixels,
+                    "building_coverage": building_pixels / max(mask.size, 1),
+                    "width": int(mask.shape[1]),
+                    "height": int(mask.shape[0]),
+                    "crs": crs.to_string() if crs else None,
+                    "output_crs": request.output_crs,
                 }
-            else:
-                result["geojson"] = geojson
 
-            result["duration_seconds"] = round(
-                time.perf_counter() - started,
-                3,
-            )
-            return result
+                if request.use_bucket:
+                    config = hub_persistence_config(default_prefix="building-segmentation/")
+                    if config is None:
+                        raise RequestValidationError(
+                            "use_bucket=true requires HF_BUCKET and HF_TOKEN "
+                            "(or HUGGING_FACE_HUB_TOKEN)"
+                        )
+                    date = datetime.now(timezone.utc).strftime("%Y%m%d")
+                    prefix = request.output_prefix or (
+                        f"{config['prefix']}{date}/{uuid.uuid4().hex}/"
+                    )
+                    keys = upload_artifacts_to_hub(
+                        {
+                            "buildings.geojson": json.dumps(geojson).encode(),
+                            "buildings_mask.tif": mask_tiff_bytes(mask, profile),
+                        },
+                        bucket=config["bucket"],
+                        token=config["token"],
+                        prefix=prefix,
+                    )
+                    storage: BucketStorage = {
+                        "provider": "huggingface_hub",
+                        "bucket": config["bucket"],
+                        "keys": keys,
+                    }
+                    result: ChangeStarResponse = {
+                        **summary,
+                        "storage": storage,
+                        "duration_seconds": round(
+                            time.perf_counter() - started,
+                            3,
+                        ),
+                    }
+                else:
+                    result = {
+                        **summary,
+                        "geojson": geojson,
+                        "duration_seconds": round(
+                            time.perf_counter() - started,
+                            3,
+                        ),
+                    }
+                return result
         except Exception:
             self.logger.exception(
                 "Request failed after %.1fs",
                 time.perf_counter() - started,
             )
             raise
-        finally:
-            if os.path.exists(tif_path):
-                os.unlink(tif_path)
